@@ -62,6 +62,28 @@ def _verify(connection, ref, params, claim):
             raise RuntimeStoreError('permission_denied')
 
 
+async def verified_worker_claim(connection, ref, params, *, registration=False):
+    """Keep OS/SQLite validation off-loop, then recheck the authority before mutation.
+
+    The await can overlap profile retirement even without an epoch change. Durable
+    mutation still performs its own epoch, generation and execution-state checks.
+    """
+    from gateway.session_authorities import require_serving
+    require_serving(connection.authority)
+
+    def validate():
+        claim = _claim(connection, ref, params)
+        if not registration:
+            if 'worker:adopt' not in connection.actor.capabilities:
+                raise RuntimeStoreError('permission_denied')
+            _verify(connection, ref, params, claim)
+        return claim
+
+    claim = await asyncio.to_thread(validate)
+    require_serving(connection.authority)
+    return claim
+
+
 async def worker_request(connection, ref, params, *, operation):
     from gateway.session_authorities import require_serving
     require_serving(connection.authority)  # adopt/persist would write with the released epoch
@@ -74,7 +96,7 @@ async def worker_request(connection, ref, params, *, operation):
     extra = {'register': {'kind'}, 'adopt': set(), 'persist': {'epoch', 'sequence', 'operation', 'payload'}}[operation]
     if set(params) != _SCOPE | extra:
         raise RuntimeStoreError('invalid_params')
-    claim = _claim(connection, ref, params)
+    claim = await verified_worker_claim(connection, ref, params, registration=operation == 'register')
     authority = connection.authority
     if operation == 'register':
         authority._require_admission_open()
@@ -87,9 +109,6 @@ async def worker_request(connection, ref, params, *, operation):
             raise RuntimeStoreError('unsupported_producer')
         return await asyncio.to_thread(register_worker_execution, authority.db, epoch=authority.epoch,
             **scope, kind='compute', adoption_secret=claim, require_idle=True)
-    if 'worker:adopt' not in connection.actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
-    _verify(connection, ref, params, claim)
     if operation == 'adopt':
         return await asyncio.to_thread(adopt_worker_execution, authority.db, epoch=authority.epoch,
                                        **scope, adoption_secret=claim)
