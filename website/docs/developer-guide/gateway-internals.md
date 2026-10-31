@@ -791,3 +791,28 @@ Plugins that load after the adapters connected (install/enable from the CLI, Des
 - [ACP Internals](./acp-internals.md)
 - [Agent Loop Internals](./agent-loop.md)
 - [Messaging Gateway (User Guide)](../user-guide/messaging/index.md)
+
+## Worker claim validation and disconnects
+
+Worker register/adopt/persist requests validate the profile, caller capabilities,
+live OS process fingerprint, assignment generation and adoption digest before a
+mutation. Main, child-reservation and delegation requests share
+`session_worker.verified_worker_claim`: blocking OS/SQLite reads run through
+`asyncio.to_thread`, which preserves the caller's profile context. The owner
+checks retirement before validation and again after the await; the durable writer
+still enforces epoch, generation and execution state. A successful read does not
+reserve authority for a later write.
+
+The owner tracks and shields the complete request so retirement can join it.
+Socket cancellation is not rollback: a write may finish after the client loses
+its reply. Reconcile the existing durable sequence receipt before retrying. This
+change adds no transport, subprocess, credential reader, schema or configuration
+setting. It changes where existing process/database reads run, not who may act.
+Trusted owner memory and database records remain assumptions; this is not OS
+isolation against code running inside Hermes.
+
+`tests/gateway/test_worker_validation_responsiveness.py` blocks validation using
+an event, verifies loop responsiveness within a two-second watchdog tolerance,
+and retires the owner during the await to prove no receipt or child assignment
+is written. The same contract covers all three request routes. Existing worker
+admission, registration and delegation tests cover identity/generation refusal.

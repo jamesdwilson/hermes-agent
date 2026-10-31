@@ -67,6 +67,7 @@ async def verified_worker_claim(connection, ref, params, *, registration=False):
 
     The await can overlap profile retirement even without an epoch change. Durable
     mutation still performs its own epoch, generation and execution-state checks.
+    The copied context keeps the owning profile bound during OS and database reads.
     """
     from gateway.session_authorities import require_serving
     require_serving(connection.authority)
@@ -85,6 +86,19 @@ async def verified_worker_claim(connection, ref, params, *, registration=False):
 
 
 async def worker_request(connection, ref, params, *, operation):
+    """Join validation/writes during retirement; socket disconnect is not rollback.
+
+    A caller with an unknown reply must reconcile its durable sequence receipt
+    before retrying, rather than assuming that no mutation occurred.
+    """
+    from gateway.session_authorities import require_serving
+    from gateway.session_runtime_workers import track_mutation
+    require_serving(connection.authority)
+    return await asyncio.shield(track_mutation(connection.authority,
+        _worker_request(connection, ref, params, operation=operation)))
+
+
+async def _worker_request(connection, ref, params, *, operation):
     from gateway.session_authorities import require_serving
     require_serving(connection.authority)  # adopt/persist would write with the released epoch
     if operation == "persist" and isinstance(params.get("operation"), str) and params["operation"].startswith("delegation."):

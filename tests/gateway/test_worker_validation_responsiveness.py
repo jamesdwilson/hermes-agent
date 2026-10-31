@@ -26,8 +26,9 @@ async def test_blocked_validation_keeps_loop_responsive_and_rechecks_retirement(
     from tools.async_delegation import _initialize_schema
 
     db = SessionDB(tmp_path / 'state.db')
-    process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    process = await asyncio.to_thread(subprocess.Popen,
+        [sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     release = threading.Event()
     try:
         db.create_session('parent', source='cli')
