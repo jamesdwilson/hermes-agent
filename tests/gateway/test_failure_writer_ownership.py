@@ -131,7 +131,7 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
 
 
 def test_context_overflow_exception_persists_nothing(tmp_path):
-    """Exception-path overflow (400/500 on a long session) must not write the user row or a
+    """Exception-path explicit overflow must not write the user row or a
     boundary — the same no-grow rule as the persist path (#1630)."""
     import asyncio
     from gateway.config import GatewayConfig, Platform

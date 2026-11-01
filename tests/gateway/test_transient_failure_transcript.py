@@ -10,8 +10,8 @@ of the last turn on the next attempt.
 
 The gateway classifier must distinguish:
 
-* ``compression_exhausted=True`` OR context-keyword errors OR a generic
-  ``400`` on a long history  → context-overflow → skip transcript
+* ``compression_exhausted=True`` OR context-keyword errors
+  → context-overflow → skip transcript
 * everything else that fails → transient → persist the user message
 """
 

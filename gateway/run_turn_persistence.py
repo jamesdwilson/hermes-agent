@@ -344,7 +344,7 @@ class GatewayTurnPersistenceMixin:
         # Save the full conversation to the transcript, including tool calls. This preserves the complete
         # agent loop (tool_calls, tool results, intermediate reasoning) so sessions can be resumed with full
         # context and transcripts are useful for debugging and training data. IMPORTANT: For
-        # context-overflow failures (compression exhausted, generic 400 on large sessions) we must NOT
+        # context-overflow failures (compression exhausted or explicit size diagnostics) we must NOT
         # persist the user's message — doing so would grow the session further and cause the same failure on
         # the next attempt, an infinite loop. (#1630, #9893) Transient failures (429, timeout, connection
         # error, provider 5xx) are different: the session is not oversized, and silently dropping the user
@@ -667,7 +667,8 @@ class GatewayTurnPersistenceMixin:
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
         status_code = getattr(e, "status_code", None)
-        if status_code in {400, 500} and len(prepared.history) > 50:
+        from gateway.run_turn import is_context_overflow_failure_result
+        if is_context_overflow_failure_result({"failed": True, "error": str(e)}, len(prepared.history)):
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
             from gateway.run import _context_overflow_reply
