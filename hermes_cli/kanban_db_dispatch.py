@@ -17,6 +17,7 @@ import sys
 import time
 from dataclasses import dataclass
 from dataclasses import field
+from hermes_cli.kanban_db_dispatch_outcomes import _DeadWorker, _CrashSweep
 from pathlib import Path
 from typing import Any
 from typing import Callable
@@ -1035,28 +1036,6 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     return " ".join(lines)[-400:]
 
 
-@dataclass
-class _DeadWorker:
-    """How ``detect_crashed_workers`` should book one dead worker."""
-
-    kind: str
-    code: Optional[int]
-    error_text: str
-    event_kind: str
-    event_payload: dict
-    protocol_violation: bool = False
-    rate_limited: bool = False
-    terminal_provider: bool = False
-    """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
-    credential/model — trips the breaker on this first occurrence."""
-
-    @property
-    def run_outcome(self) -> str:
-        # A rate-limited requeue is recorded as ``rate_limited`` so board history
-        # doesn't show a phantom crash for a quota wall.
-        return "rate_limited" if self.rate_limited else "crashed"
-
-
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], exit_code=None, *, task_id: Optional[str] = None,
     board: Optional[str] = None,
@@ -1147,20 +1126,6 @@ def _classify_dead_worker_exit(
     return _DeadWorker(kind, code, error_text, "crashed", event_payload)
 
 
-@dataclass
-class _CrashSweep:
-    """Everything ``detect_crashed_workers`` collects inside its reclaim txn."""
-
-    crashed: list[str] = field(default_factory=list)
-    rate_limited: list[str] = field(default_factory=list)
-    # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
-    # ``_record_task_failure`` (needs its own write_txn).
-    crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
-    # Worker-exit observer payloads, fired only after every reclaim/accounting
-    # txn has committed.
-    exited_hook_payloads: list[dict] = field(default_factory=list)
-
-
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
     sweep = _CrashSweep()
@@ -1189,6 +1154,11 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
 
             pid = int(row["worker_pid"])
+            from hermes_cli.kanban_db_dispatch_outcomes import park_lifecycle_interruption
+            interrupted = park_lifecycle_interruption(conn, row["id"], pid, row["claim_lock"])
+            if interrupted is not None:
+                sweep.exited_hook_payloads.append({**interrupted, "assignee": row["assignee"]})
+                continue
             # A managed run's authority-recorded exit (its bound interpreter's, under this claim).
             exit_code = managed_run_exit_code(conn, row["id"], pid, row["claim_lock"])
             dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board)

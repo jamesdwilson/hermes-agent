@@ -1366,6 +1366,16 @@ effects and complete or block the card first; unblock a blocked card only when a
 new attempt is intended. Confirmed timeouts and provider rate-limit results retain their ordinary
 retry/failure-accounting behavior.
 
+A verified cooperative gateway restart or shutdown is handled separately. When the
+current bound interpreter records its lifecycle cause, both worker processes have
+ended, and the matching owner admission is terminal/interrupted, the dispatcher
+closes the run as `interrupted` and parks the card in sticky `blocked` state. Its
+existing failure count is preserved. It does not automatically retry: inspect the
+attempt's effects before explicitly unblocking the card. User Stop, exit code 130
+alone, missing or mismatched provenance, unknown owner outcomes, and genuine worker
+loss do not receive this lifecycle exemption. Abrupt termination that never records
+the cause retains the existing recovery behavior described above.
+
 A task is a logical unit of work; a **run** is one attempt to execute it. When the dispatcher claims a ready task it creates a row in `task_runs` and points `tasks.current_run_id` at it. When that attempt ends — completed, blocked, crashed, timed out, spawn-failed, reclaimed — the run row closes with an `outcome` and the task's pointer clears. A task that's been attempted three times has three `task_runs` rows.
 
 Why two tables instead of just mutating the task: you need **full attempt history** for real-world postmortems ("the second reviewer attempt got to approve, the third merged"), and you need a clean place to hang per-attempt metadata — which files changed, which tests ran, which findings a reviewer noted. Those are run facts, not task facts.

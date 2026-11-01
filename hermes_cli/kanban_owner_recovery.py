@@ -295,3 +295,32 @@ def managed_run_exit_code(conn, task_id, worker_pid, claim_lock):
     result, bound = latest('worker_result'), latest('worker_bound')
     pids = {worker_pid, *([bound.get('pid')] if bound.get('claim_lock') == claim_lock else [])}
     return result.get('exit_code') if result.get('claim_lock') == claim_lock and result.get('pid') in pids else None
+
+
+def managed_lifecycle_interrupt_cause(conn, task_id, claim_lock):
+    """A settled current bound interpreter's lifecycle interruption, never a log inference."""
+    current = conn.execute(
+        "SELECT 1 FROM tasks t JOIN task_runs r ON r.id=t.current_run_id AND r.task_id=t.id "
+        "WHERE t.id=? AND t.status='running' AND t.claim_lock=? AND r.claim_lock=t.claim_lock AND r.ended_at IS NULL",
+        (task_id, claim_lock),
+    ).fetchone()
+    if not current or not _host_local_lock(claim_lock):
+        return None
+    result = _latest_run_event(conn, task_id, 'worker_result')
+    bound = _latest_run_event(conn, task_id, 'worker_bound')
+    cause, pid = result.get('interrupt_cause'), bound.get('pid')
+    if (cause not in ('gateway_restart', 'gateway_shutdown') or result.get('exit_code') != 130
+            or type(pid) is not int or pid <= 0 or type(result.get('pid')) is not int
+            or result['pid'] != pid
+            or result.get('claim_lock') != claim_lock or bound.get('claim_lock') != claim_lock):
+        return None
+    # Even malformed loss evidence must not be masked by an earlier cooperative result.
+    lost = conn.execute(
+        "SELECT 1 FROM task_events e JOIN tasks t ON t.current_run_id=e.run_id "
+        "WHERE t.id=? AND e.task_id=t.id AND e.kind='worker_lost' LIMIT 1", (task_id,),
+    ).fetchone()
+    if lost or not bound_interpreter_gone(conn, task_id):
+        return None
+    if _admission_row(_owner_receipt(conn, task_id)) != ('terminal', 'interrupted'):
+        return None
+    return cause
