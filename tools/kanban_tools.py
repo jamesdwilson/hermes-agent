@@ -18,6 +18,7 @@ from typing import Any, Callable, Optional
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
+from tools.kanban_tools_lifecycle_errors import require_lifecycle_result
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
@@ -795,7 +796,7 @@ def _handle_complete(args: dict, **kw) -> str:
                 raise _Reject(
                     f"could not complete {tid}: unsatisfied parent dependencies: "
                     f"{detail}; complete the parents first (done or archived)")
-            _check(False, (task.last_failure_error if task else None) or
+            require_lifecycle_result(False, kb, conn, tid, (task.last_failure_error if task else None) or
                    f"could not complete {tid} (unknown id, stale run, or already terminal)")
         run = kb.latest_run(conn, tid)
         # Artifact staging is atomic with the completion write, so a worker that
@@ -835,7 +836,7 @@ def _handle_block(args: dict, **kw) -> str:
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
         ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
-        _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
+        require_lifecycle_result(ok, kb, conn, tid, f"could not block {tid} (unknown id or not in running/ready)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
         if kind == "dependency" and landed_kind != kind:
@@ -866,7 +867,7 @@ def _handle_schedule(args: dict, **kw) -> str:
                "blocker, or kanban_complete so the completion judge can evaluate it.")
         ok = kb.schedule_task(
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
-        _check(ok, f"could not schedule {tid} (unknown id or not in todo/ready/running/blocked)")
+        require_lifecycle_result(ok, kb, conn, tid, f"could not schedule {tid} (unknown id or not in todo/ready/running/blocked)")
         return _ok_landed(kb, conn, tid, "scheduled", reason=reason)
 
 
@@ -911,7 +912,7 @@ def _handle_request_review(args: dict, **kw) -> str:
                 f"Your task is still in-flight (no state change) and its scratch workspace was "
                 f"kept. Fix the artifact path or storage error, then retry "
                 f"kanban_request_review with the same handoff.")
-        _check(ok, f"could not request review for {tid}: "
+        require_lifecycle_result(ok, kb, conn, tid, f"could not request review for {tid}: "
                    f"{fail_reason or 'unknown id or not in running/ready'}")
         return _ok_landed(kb, conn, tid, "review")
 
@@ -925,7 +926,7 @@ def _handle_request_changes(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         ok, detail = kb.request_changes(
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
-        _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}")
+        require_lifecycle_result(ok, kb, conn, tid, f"could not request changes for {tid}: {detail or 'invalid review state'}")
         return _ok_landed(kb, conn, tid, "ready", implementer=detail)
 
 
