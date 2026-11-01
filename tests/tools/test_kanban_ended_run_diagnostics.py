@@ -4,8 +4,10 @@ import json
 import pytest
 
 from tests.tools import test_kanban_tools as fixtures
+from tests.tools import test_kanban_complete_parents_tool as parent_fixtures
 
 worker_env = fixtures.worker_env
+reopened_parent = parent_fixtures.running_child_with_parent
 
 
 @pytest.mark.parametrize('verb,args', [
@@ -63,3 +65,26 @@ def test_refusal_does_not_invent_ended_run_evidence(worker_env, monkeypatch, ide
     assert 'Stop working on this task' not in result['error']
     with kbc.connect() as conn:
         assert kb.get_task(conn, worker_env) == before
+
+
+def test_parent_reopen_refusal_tells_invalidated_worker_to_stop(reopened_parent):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools  # register the production handlers
+    from tools.registry import registry
+
+    parent, child = reopened_parent
+    with kbc.connect() as conn:
+        old = kb.get_task(conn, child).current_run_id
+        kb.invalidate_descendants_for_parent_reopen(conn, parent, author='operator')
+        before = kb.get_task(conn, child)
+        ended = kb.get_run(conn, old)
+        assert ended.outcome == 'reclaimed'
+        assert before.current_run_id is None
+    result = json.loads(registry.dispatch('kanban_complete', {'summary': 'late completion'}))
+    assert f'Your run {old} ended (reclaimed)' in result['error']
+    assert 'no current run' in result['error']
+    assert 'Stop working on this task' in result['error']
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, child) == before
+        assert kb.get_run(conn, old) == ended

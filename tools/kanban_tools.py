@@ -793,7 +793,7 @@ def _handle_complete(args: dict, **kw) -> str:
             blockers = kb.unsatisfied_parents(conn, tid)
             if blockers:
                 detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
-                raise _Reject(
+                require_lifecycle_result(False, kb, conn, tid,
                     f"could not complete {tid}: unsatisfied parent dependencies: "
                     f"{detail}; complete the parents first (done or archived)")
             require_lifecycle_result(False, kb, conn, tid, (task.last_failure_error if task else None) or
