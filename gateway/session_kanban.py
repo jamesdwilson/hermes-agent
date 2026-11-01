@@ -276,16 +276,18 @@ def _run_worker_turns(agent, frame, history):
                                           **({'turn_author': author} if author is not None else {}))
     from hermes_cli.turn_exit import credential_failure_flags, turn_exit_code
     code, last_output = 1, ''
+    interrupt_cause = None
     try:
         result = _run_task_turns(agent, frame, history, context)
         code = turn_exit_code(result, kanban_worker=True)
+        interrupt_cause = _lifecycle_interrupt_cause(result)
         last_output = str(result.get('final_response') or '')[-500:] if isinstance(result, dict) else ''
         return result
     except Exception as exc:
         code = turn_exit_code(None, kanban_worker=True, **credential_failure_flags(exc))
         raise
     finally:
-        _record_worker_result(context, code, last_output)
+        _record_worker_result(context, code, last_output, interrupt_cause=interrupt_cause)
 
 
 def record_start_failure(frame, exc):
@@ -298,7 +300,18 @@ def record_start_failure(frame, exc):
     _record_worker_result(context, turn_exit_code(None, kanban_worker=True, **credential_failure_flags(exc)), '')
 
 
-def _record_worker_result(context, code, last_output):
+def _lifecycle_interrupt_cause(result):
+    if not isinstance(result, dict) or not result.get('interrupted'):
+        return None
+    cause = result.get('interrupt_message')
+    if not isinstance(cause, str):
+        return None
+    from gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+    return {_INTERRUPT_REASON_GATEWAY_RESTART: 'gateway_restart',
+            _INTERRUPT_REASON_GATEWAY_SHUTDOWN: 'gateway_shutdown'}.get(cause)
+
+
+def _record_worker_result(context, code, last_output, *, interrupt_cause=None):
     _TURNS_DONE.set()
     import os
     from hermes_cli.kanban_db_connect import connect_closing
@@ -307,9 +320,17 @@ def _record_worker_result(context, code, last_output):
         if _bound_worker_matches(conn, context):
             # Closing a run clears its claim/PID and replaces metadata; keep the
             # result in the immutable attempt event stream instead.
+            payload = {'pid': os.getpid(), 'claim_lock': context['claim_lock'],
+                       'exit_code': code, 'last_output': last_output}
+            # Historical results remain readable, but a retired claim cannot publish
+            # lifecycle provenance for a successor's accounting decisions.
+            if interrupt_cause is not None and conn.execute(
+                "SELECT 1 FROM tasks WHERE id=? AND status='running' AND current_run_id=? AND claim_lock=?",
+                (context['task_id'], context['run_id'], context['claim_lock']),
+            ).fetchone():
+                payload['interrupt_cause'] = interrupt_cause
             kb._append_event(conn, context['task_id'], 'worker_result',
-                {'pid': os.getpid(), 'claim_lock': context['claim_lock'], 'exit_code': code,
-                 'last_output': last_output}, run_id=context['run_id'])
+                             payload, run_id=context['run_id'])
 
 
 def record_worker_loss(policy, reason, *, pid=None, bound=False):
