@@ -235,6 +235,10 @@ class ManagedWorker:
             if self.stopped_at is None:
                 self.stopped_at = time.monotonic()
             self.stop.set()
+            from gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+            if self.stop_cause in (_INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN):
+                # The child persists its Kanban result before owner-side settlement.
+                frame = {**frame, 'reason': self.stop_cause}
         try:
             self.commands.put_nowait(frame)
         except queue.Full as exc:

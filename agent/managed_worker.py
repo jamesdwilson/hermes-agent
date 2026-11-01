@@ -179,17 +179,21 @@ class WorkerControls:
         self.channel, self.route = channel, route
         self.agent = None
         self.stopped = threading.Event()
+        self.stop_cause = None
         self.finish = threading.Event()
         self.clarifications = {}
         self.lock = threading.Lock()
         self.reader = threading.Thread(target=self.read, name='managed-controls', daemon=True)
         self.reader.start()
 
-    def stop(self):
+    def stop(self, reason=None):
+        # The first Stop owns its cause: a later shutdown cannot relabel user Stop.
+        if not self.stopped.is_set():
+            self.stop_cause = reason
         self.stopped.set()
         if self.agent is not None:
             from agent.interrupt_compat import request_hard_interrupt
-            request_hard_interrupt(self.agent)  # parity with the canonical Stop (SessionAuthority.interrupt)
+            request_hard_interrupt(self.agent, self.stop_cause)  # parity with the canonical Stop (SessionAuthority.interrupt)
         with self.lock:
             for state in self.clarifications.values():
                 state['answer'] = _INTERRUPTED
@@ -202,6 +206,11 @@ class WorkerControls:
                 frame = read_frame(sys.stdin.buffer)
                 if frame == {'type': 'stop'}:
                     self.stop()
+                    continue
+                from gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+                if (set(frame) == {'type', 'reason'} and frame['type'] == 'stop'
+                        and frame['reason'] in (_INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN)):
+                    self.stop(frame['reason'])
                     continue
                 if frame == {'type': 'finish'}:
                     self.finish.set()
@@ -383,7 +392,7 @@ def execute(frame, channel):
             controls.agent = agent
             if controls.stopped.is_set():
                 from agent.interrupt_compat import request_hard_interrupt
-                request_hard_interrupt(agent)
+                request_hard_interrupt(agent, controls.stop_cause)
             channel.send('ready', pid=os.getpid())
             history = store.get_messages_as_conversation(scope['session_id'])
             from gateway.session_kanban import run_worker_turns

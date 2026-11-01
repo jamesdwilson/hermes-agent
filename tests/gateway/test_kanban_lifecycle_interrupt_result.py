@@ -55,3 +55,46 @@ def test_stale_or_foreign_writer_cannot_publish_lifecycle_cause(tmp_path, monkey
     })
     session_kanban.run_worker_turns(SimpleNamespace(), {"policy": {"kanban_json": json.dumps(context)}}, [])
     assert "interrupt_cause" not in session_kanban.worker_result(path, original)
+
+
+@pytest.mark.parametrize("reason,cause", [
+    (_INTERRUPT_REASON_GATEWAY_RESTART, "gateway_restart"),
+    (_INTERRUPT_REASON_GATEWAY_SHUTDOWN, "gateway_shutdown"),
+])
+@pytest.mark.parametrize("user_stop_first", [False, True])
+def test_owner_stop_cause_reaches_bound_child_result(tmp_path, monkeypatch, reason, cause, user_stop_first):
+    import io
+    import threading
+    from agent import managed_worker
+    from gateway.run_runtime import stop_authority_turns
+    from gateway.session_managed_worker import ManagedWorker
+
+    path, context = _bound_claim(tmp_path, monkeypatch)
+    owner_worker = ManagedWorker(SimpleNamespace())
+    authority = SimpleNamespace(_managed_workers={"session": owner_worker})
+    if user_stop_first:
+        owner_worker.control({"type": "stop"})
+    stop_authority_turns(authority, reason=reason)
+    stop_frame = owner_worker.commands.get_nowait()
+
+    class Agent:
+        message = None
+
+        def hard_interrupt(self, message=None):
+            self.message = message
+
+        def run_conversation(self, *args, **kwargs):
+            return {"interrupted": True, "interrupt_message": self.message}
+
+    agent = Agent()
+    controls = managed_worker.WorkerControls.__new__(managed_worker.WorkerControls)
+    controls.agent = agent
+    controls.stopped, controls.finish = threading.Event(), threading.Event()
+    controls.lock, controls.clarifications = threading.Lock(), {}
+    frames = (json.dumps(stop_frame) + '\n' + json.dumps({"type": "finish"}) + '\n').encode()
+    monkeypatch.setattr(managed_worker.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(frames)))
+    controls.read()
+    assert controls.stopped.is_set()
+    monkeypatch.setattr(session_kanban, "_run_task_turns", lambda a, *_args: a.run_conversation())
+    session_kanban.run_worker_turns(agent, {"policy": {"kanban_json": json.dumps(context)}}, [])
+    assert session_kanban.worker_result(path, context).get("interrupt_cause") == (None if user_stop_first else cause)
