@@ -37,9 +37,35 @@ def worker_context(tmp_path, monkeypatch):
                                   adoption_secret=session_worker._claim(client, ref, identity))
         yield authority, client, ref, identity
     finally:
-        child.stdin.close()
-        child.wait(timeout=10)
-        store.close_all_db_handles()
+        original_error = sys.exc_info()[1]
+        try:
+            try:
+                child.stdin.close()
+                try:
+                    child.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    child.kill()  # Only the synthetic test child, never a gateway process.
+                    child.wait(timeout=5)
+            finally:
+                store.close_all_db_handles()
+        except Exception as cleanup_error:
+            if original_error is None:
+                raise
+            original_error.add_note(f'Worker fixture cleanup also failed: {cleanup_error}')
+
+
+async def _join_requests(request, authority):
+    tasks = {request, *getattr(authority, '_mutation_tasks', ())}
+    done, pending = await asyncio.wait(tasks, timeout=10)
+    if pending:
+        for task in pending:
+            task.cancel()
+        cancelled, pending = await asyncio.wait(pending, timeout=5)
+        done.update(cancelled)
+    for task in done:
+        if not task.cancelled():
+            task.exception()
+    assert not pending, 'worker request ignored cancellation during bounded cleanup'
 
 
 @pytest.mark.asyncio
@@ -88,7 +114,7 @@ async def test_retirement_retains_worker_request_until_its_effects_finish(
                 await request
         retired_early = await _retire_profile_authority(authority, timeout=0)
         release.set()
-        await asyncio.gather(request, *getattr(authority, '_mutation_tasks', ()), return_exceptions=True)
+        await _join_requests(request, authority)
         assert await asyncio.to_thread(returned.wait, 10)
         expected_wakes = ['parent'] if boundary == 'committed-finish' else []
         assert (retired_early, wakes) == (False, expected_wakes), 'ownership/follow-up lost at boundary'
@@ -96,6 +122,12 @@ async def test_retirement_retains_worker_request_until_its_effects_finish(
         assert await _retire_profile_authority(authority, timeout=0)
         assert authority.retired
     finally:
+        original_error = sys.exc_info()[1]
         release.set()
-        await asyncio.gather(request, *getattr(authority, '_mutation_tasks', ()), return_exceptions=True)
-        assert await asyncio.to_thread(returned.wait, 10)
+        try:
+            await _join_requests(request, authority)
+            assert await asyncio.to_thread(returned.wait, 10)
+        except Exception as cleanup_error:
+            if original_error is None:
+                raise
+            original_error.add_note(f'Worker request cleanup also failed: {cleanup_error}')
