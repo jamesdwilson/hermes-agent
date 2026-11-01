@@ -1149,7 +1149,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
                 continue
             # An ambiguous receipt holds the card while the attempt may still run; once nothing
-            # can be executing it (a dead bound interpreter, or a run that never bound one): crash.
+            # can be executing it, the sweep parks verified lifecycle interruptions or books a crash.
             if owner_reclaim_blocked(conn, row["id"], crash_sweep=True):
                 continue
 
@@ -1292,8 +1292,9 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
 def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
-    Restores the source phase immediately (no waiting for the claim TTL), for
-    tasks claimed by *this host* only — other hosts' PIDs are meaningless.
+    For tasks claimed by *this host*, verified lifecycle interruptions are parked blocked;
+    ordinary losses restore the source phase without waiting for the claim TTL. Other hosts'
+    PIDs are meaningless here.
     Clean exit while ``running`` is a protocol violation with a bounded
     violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
     wall, released WITHOUT counting a failure and surfaced via the

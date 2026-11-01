@@ -248,7 +248,8 @@ def owner_reclaim_blocked(conn, task_id, *, crash_sweep=False) -> bool:
     The pause protects the effects of an attempt that may still be in flight, and stops
     holding the claim as soon as nothing can still be executing it. A run whose bound
     interpreter is dead stays the crash sweep's alone (``crash_sweep=True``), so it is booked
-    ``crashed`` and re-queued once rather than ``reclaimed`` by whichever path ticks first. A
+    once by that sweep rather than ``reclaimed`` by whichever path ticks first: verified lifecycle
+    interruptions are parked; ordinary losses are booked ``crashed`` and re-queued. A
     run that never bound one is released by any path once ``owner_attempt_provably_over``:
     the shape that used to be unreclaimable forever, because ``bound_interpreter_gone`` was the
     only override and it needs the ``worker_bound`` event that run never wrote.
